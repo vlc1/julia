@@ -88,6 +88,13 @@
 #endif
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 
+// for outputting assembly
+#include <llvm/Analysis/TargetTransformInfo.h>
+#include <llvm/CodeGen/AsmPrinter.h>
+#include <llvm/CodeGen/MachineModuleInfo.h>
+#include <llvm/CodeGen/TargetPassConfig.h>
+#include <llvm/Target/TargetLoweringObjectFile.h>
+
 using namespace llvm;
 namespace llvm {
     extern bool annotateSimdLoop(BasicBlock *latch);
@@ -1612,6 +1619,73 @@ void *jl_get_llvmf_defn(jl_method_instance_t *linfo, size_t world, bool getwrapp
 
 void jl_strip_llvm_debug(Module *m);
 
+/// addPassesToX helper drives creation and initialization of TargetPassConfig.
+#if JL_LLVM_VERSION < 50000
+static MCContext *
+addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM) {
+  AnalysisID StartBefore = 0;
+  AnalysisID StartAfter = 0;
+  AnalysisID StopAfter = 0;
+
+  // When in emulated TLS mode, add the LowerEmuTLS pass.
+  if (TM->Options.EmulatedTLS)
+    PM.add(createLowerEmuTLSPass(TM));
+
+  PM.add(createPreISelIntrinsicLoweringPass());
+
+  // Add internal analysis passes from the target machine.
+  PM.add(createTargetTransformInfoWrapperPass(TM->getTargetIRAnalysis()));
+
+  // Targets may override createPassConfig to provide a target-specific
+  // subclass.
+  TargetPassConfig *PassConfig = TM->createPassConfig(PM);
+  PassConfig->setStartStopPasses(StartBefore, StartAfter, StopAfter);
+
+  // Set PassConfig options provided by TargetMachine.
+  PassConfig->setDisableVerify(false);
+
+  PM.add(PassConfig);
+
+  PassConfig->addIRPasses();
+
+  PassConfig->addCodeGenPrepare();
+
+  PassConfig->addPassesToHandleExceptions();
+
+  PassConfig->addISelPrepare();
+
+  MachineModuleInfo &MMI = TM->addMachineModuleInfo(PM);
+  TM->addMachineFunctionAnalysis(PM, nullptr);
+
+  // Disable FastISel with -O0
+  TM->setO0WantsFastISel(false);
+
+  if (PassConfig->addInstSelector())
+    return nullptr;
+
+  PassConfig->addMachinePasses();
+
+  PassConfig->setInitialized();
+
+  return &MMI.getContext();
+}
+#else
+static MCContext *
+addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM) {
+    TargetPassConfig *PassConfig = TM->createPassConfig(PM);
+    PassConfig->setDisableVerify(false);
+    PM.add(PassConfig);
+    MachineModuleInfo *MMI = new MachineModuleInfo(TM);
+    PM.add(MMI);
+    if (!PassConfig->addISelPasses())
+        return NULL;
+    PassConfig->addMachinePasses();
+    PassConfig->setInitialized();
+    return &MMI->getContext();
+}
+#endif
+
+
 // get a native disassembly for linfo
 extern "C" JL_DLLEXPORT
 jl_value_t *jl_dump_method_asm(jl_method_instance_t *linfo, size_t world,
@@ -1620,22 +1694,10 @@ jl_value_t *jl_dump_method_asm(jl_method_instance_t *linfo, size_t world,
     // printing via disassembly
 /*
     jl_llvm_functions_t decls = {};
-    JL_TRY {
-        decls = jl_compile_linfo(&linfo, NULL, world, &params);
-    } JL_CATCH {
-        decls = {};
-    }
-    const char *jithandle = decls.functionObject;
-    if (!getwrapper && decls.specFunctionObject)
-        jithandle = decls.specFunctionObject;
-    if (jithandle) {
-        uint64_t fptr = getAddressForFunction(jithandle);
-        // Look in the system image as well
-        if (fptr == 0)
-            fptr = (uintptr_t)jl_ExecutionEngine->getPointerToGlobalIfAvailable(jithandle);
-        if (fptr != 0)
-            return jl_dump_fptr_asm(fptr, raw_mc, asm_variant);
-    }
+    jl_generic_fptr_t decls = jl_generate_fptr(linfo, NULL, world);
+    uint64_t fptr = (uintptr_t)decls.fptr;
+    if (fptr)
+        return jl_dump_fptr_asm(fptr, raw_mc, asm_variant);
 */
 
     // precise printing via IR assembler
@@ -1651,10 +1713,33 @@ jl_value_t *jl_dump_method_asm(jl_method_instance_t *linfo, size_t world,
         }
         jl_strip_llvm_debug(m.get());
         legacy::PassManager PM;
-        if (jl_TargetMachine->addPassesToEmitFile(PM, asmfile, TargetMachine::CGFT_AssemblyFile, false)) {
-            jl_safe_printf("ERROR: target does not support generation of object files\n");
+        LLVMTargetMachine *TM = static_cast<LLVMTargetMachine*>(jl_TargetMachine);
+        MCContext *Context = addPassesToGenerateCode(TM, PM);
+        if (Context) {
+            const MCAsmInfo &MAI = *TM->getMCAsmInfo();
+            const MCRegisterInfo &MRI = *TM->getMCRegisterInfo();
+            const MCInstrInfo &MII = *TM->getMCInstrInfo();
+            unsigned OutputAsmDialect = MAI.getAssemblerDialect();
+            if (!strcmp(asm_variant, "att"))
+                OutputAsmDialect = 0;
+            if (!strcmp(asm_variant, "intel"))
+                OutputAsmDialect = 1;
+            MCInstPrinter *InstPrinter = TM->getTarget().createMCInstPrinter(
+                TM->getTargetTriple(), OutputAsmDialect, MAI, MII, MRI);
+            MCAsmBackend *MAB =
+                TM->getTarget().createMCAsmBackend(MRI, TM->getTargetTriple().str(), TM->getTargetCPU());
+            auto FOut = llvm::make_unique<formatted_raw_ostream>(asmfile);
+            MCCodeEmitter *MCE = nullptr;
+            std::unique_ptr<MCStreamer> S(TM->getTarget().createAsmStreamer(
+                *Context, std::move(FOut), true,
+                true, InstPrinter, MCE, MAB, false));
+            AsmPrinter *Printer =
+                TM->getTarget().createAsmPrinter(*TM, std::move(S));
+            if (Printer) {
+                PM.add(Printer);
+                PM.run(*m);
+            }
         }
-        PM.run(*m);
     }
     return jl_pchar_to_string(ObjBufferSV.data(), ObjBufferSV.size());
 }
