@@ -302,7 +302,7 @@ get_value_getfield(sym, fn) = get_value(sym, fn)
 function get_type_call(expr::Expr)
     f_name = expr.args[1]
     # The if statement should find the f function. How f is found depends on how f is referenced
-    if isa(f_name, GlobalRef) && isconst(f_name.mod,f_name.name) && isdefined(f_name.mod,f_name.name)
+    if isa(f_name, Core.GlobalRef) && isconst(f_name.mod,f_name.name) && isdefined(f_name.mod,f_name.name)
         ft = typeof(eval(f_name))
         found = true
     else
@@ -334,7 +334,7 @@ function try_get_type(sym::Expr, fn::Module)
         # getfield call is special cased as the evaluation of getfield provides good type information,
         # is inexpensive and it is also performed in the complete_symbol function.
         a1 = sym.args[1]
-        if isa(a1,GlobalRef) && isconst(a1.mod,a1.name) && isdefined(a1.mod,a1.name) &&
+        if isa(a1,Core.GlobalRef) && isconst(a1.mod,a1.name) && isdefined(a1.mod,a1.name) &&
             eval(a1) === Core.getfield
             val, found = get_value_getfield(sym, Main)
             return found ? Base.typesof(val).parameters[1] : Any, found
@@ -342,13 +342,13 @@ function try_get_type(sym::Expr, fn::Module)
         return get_type_call(sym)
     elseif sym.head === :thunk
         thk = sym.args[1]
-        rt = ccall(:jl_infer_thunk, Any, (Any, Any), thk::CodeInfo, fn)
+        rt = ccall(:jl_infer_thunk, Any, (Any, Any), thk::Core.CodeInfo, fn)
         rt !== Any && return (rt, true)
     elseif sym.head === :ref
         # some simple cases of `expand`
-        return try_get_type(Expr(:call, GlobalRef(Base, :getindex), sym.args...), fn)
+        return try_get_type(Expr(:call, Core.GlobalRef(Base, :getindex), sym.args...), fn)
     elseif sym.head === :.
-        return try_get_type(Expr(:call, GlobalRef(Core, :getfield), sym.args...), fn)
+        return try_get_type(Expr(:call, Core.GlobalRef(Core, :getfield), sym.args...), fn)
     end
     return (Any, false)
 end

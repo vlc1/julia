@@ -63,6 +63,7 @@ include("bindings.jl")
 import Base.Meta: quot, isexpr
 import Base: Callable, with_output_color
 import ..CoreDocs: lazy_iterpolate
+import Core: GlobalRef
 
 export doc
 

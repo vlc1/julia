@@ -50,18 +50,18 @@ end
 
 function remember_object(s::ClusterSerializer, @nospecialize(o), n::UInt64)
     known_object_data[n] = o
-    if isa(o, TypeName) && !haskey(object_numbers, o)
+    if isa(o, Core.TypeName) && !haskey(object_numbers, o)
         # set up reverse mapping for serialize
         object_numbers[o] = n
     end
     return nothing
 end
 
-function deserialize(s::ClusterSerializer, ::Type{TypeName})
+function deserialize(s::ClusterSerializer, ::Type{Core.TypeName})
     full_body_sent = deserialize(s)
     number = read(s.io, UInt64)
     if !full_body_sent
-        tn = lookup_object_number(s, number)::TypeName
+        tn = lookup_object_number(s, number)::Core.TypeName
         remember_object(s, tn, number)
         deserialize_cycle(s, tn)
     else
@@ -73,7 +73,7 @@ function deserialize(s::ClusterSerializer, ::Type{TypeName})
     return tn
 end
 
-function serialize(s::ClusterSerializer, t::TypeName)
+function serialize(s::ClusterSerializer, t::Core.TypeName)
     serialize_cycle(s, t) && return
     writetag(s.io, TYPENAME_TAG)
 
@@ -102,7 +102,7 @@ function serialize(s::ClusterSerializer, t::TypeName)
     nothing
 end
 
-function serialize(s::ClusterSerializer, g::GlobalRef)
+function serialize(s::ClusterSerializer, g::Core.GlobalRef)
     # Record if required and then invoke the default GlobalRef serializer.
     sym = g.name
     if g.mod === Main && isdefined(g.mod, sym)
@@ -113,7 +113,7 @@ function serialize(s::ClusterSerializer, g::GlobalRef)
         end
     end
 
-    invoke(serialize, Tuple{AbstractSerializer, GlobalRef}, s, g)
+    invoke(serialize, Tuple{AbstractSerializer, Core.GlobalRef}, s, g)
 end
 
 # Send/resend a global object if

@@ -2219,7 +2219,7 @@ t_a7652 = A7652
 f7652() = fieldtype(t_a7652, :a) <: Int
 @test f7652() == (fieldtype(A7652, :a) <: Int) == true
 g7652() = fieldtype(DataType, :types)
-@test g7652() == fieldtype(DataType, :types) == SimpleVector
+@test g7652() == fieldtype(DataType, :types) == Core.SimpleVector
 @test fieldtype(t_a7652, 1) == Int
 h7652() = setfield!(a7652, 1, 2)
 h7652()
@@ -4271,7 +4271,7 @@ function count_expr_push(ex::Expr, head::Symbol, counter)
     return false
 end
 
-function metadata_matches(ast::CodeInfo)
+function metadata_matches(ast::Core.CodeInfo)
     inbounds_cnt = Ref(0)
     for ex in ast.code::Array{Any,1}
         if isa(ex, Expr)
@@ -4866,7 +4866,7 @@ missing_tvar(::T...) where {T} = T
 @test_throws MethodError missing_tvar(1, 2, "3")
 
 # issue #19059 - test for lowering of `let` with assignment not adding Box in simple cases
-contains_Box(e::GlobalRef) = (e.name === :Box)
+contains_Box(e::Core.GlobalRef) = (e.name === :Box)
 contains_Box(@nospecialize(e)) = false
 contains_Box(e::Expr) = any(contains_Box, e.args)
 
@@ -4965,9 +4965,9 @@ end
 
 module TestModuleAssignment
 using Test
-@eval $(GlobalRef(TestModuleAssignment, :x)) = 1
+@eval $(Core.GlobalRef(TestModuleAssignment, :x)) = 1
 @test x == 1
-@eval $(GlobalRef(TestModuleAssignment, :x)) = 2
+@eval $(Core.GlobalRef(TestModuleAssignment, :x)) = 2
 @test x == 2
 end
 

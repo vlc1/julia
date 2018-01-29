@@ -1407,6 +1407,11 @@ end
 
 @deprecate which(s::Symbol) which(Main, s)
 
+@deprecate_binding InsertionSort    Base.Sort.InsertionSort
+@deprecate_binding MergeSort        Base.Sort.MergeSort
+@deprecate_binding QuickSort        Base.Sort.QuickSort
+@deprecate_binding PartialQuickSort Base.Sort.PartialQuickSort
+
 # END 0.7 deprecations
 
 # BEGIN 1.0 deprecations

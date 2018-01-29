@@ -29,19 +29,19 @@ export # also exported by Base
     partialsortperm,
     partialsortperm!,
     sortrows,
-    sortcols,
-    # algorithms:
-    InsertionSort,
-    QuickSort,
-    MergeSort,
-    PartialQuickSort
+    sortcols
 
 export # not exported by Base
     Algorithm,
     DEFAULT_UNSTABLE,
     DEFAULT_STABLE,
     SMALL_ALGORITHM,
-    SMALL_THRESHOLD
+    SMALL_THRESHOLD,
+    # algorithms:
+    InsertionSort,
+    QuickSort,
+    MergeSort,
+    PartialQuickSort
 
 
 ## functions requiring only ordering ##
