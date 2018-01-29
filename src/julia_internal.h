@@ -324,6 +324,7 @@ jl_value_t *jl_gc_realloc_string(jl_value_t *s, size_t sz);
 jl_code_info_t *jl_type_infer(jl_method_instance_t **li JL_ROOTS_TEMPORARILY, size_t world, int force);
 jl_generic_fptr_t jl_generate_fptr(jl_method_instance_t *li, jl_code_info_t *src, size_t world);
 void jl_generate_ir(jl_method_instance_t *li, jl_code_info_t *src, size_t world);
+void *jl_get_llvmf_defn(jl_method_instance_t *linfo, size_t world, char getwrapper, char optimize, const jl_cgparams_t params);
 jl_generic_fptr_t jl_compile_for_dispatch(jl_method_instance_t **li, size_t world);
 JL_DLLEXPORT int jl_compile_hint(jl_tupletype_t *types);
 jl_value_t *jl_interpret_call(jl_method_instance_t *lam, jl_value_t **args, uint32_t nargs);

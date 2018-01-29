@@ -88,13 +88,6 @@
 #endif
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 
-// for outputting assembly
-#include <llvm/Analysis/TargetTransformInfo.h>
-#include <llvm/CodeGen/AsmPrinter.h>
-#include <llvm/CodeGen/MachineModuleInfo.h>
-#include <llvm/CodeGen/TargetPassConfig.h>
-#include <llvm/Target/TargetLoweringObjectFile.h>
-
 using namespace llvm;
 namespace llvm {
     extern bool annotateSimdLoop(BasicBlock *latch);
@@ -1354,145 +1347,6 @@ static std::pair<bool, bool> uses_specsig(jl_method_instance_t *lam, bool prefer
 }
 
 
-// this ensures that llvmf has been emitted to the execution engine,
-// returning the function pointer to it
-extern void jl_callback_triggered_linfos(void);
-static uint64_t getAddressForFunction(StringRef fname)
-{
-    JL_TIMING(LLVM_EMIT);
-#ifdef JL_DEBUG_BUILD
-    llvm::raw_fd_ostream out(1, false);
-#endif
-    jl_finalize_function(fname);
-    uint64_t ret = jl_ExecutionEngine->getFunctionAddress(fname);
-    // delay executing trace callbacks until here to make sure there's no
-    // recursive compilation.
-    jl_callback_triggered_linfos();
-    return ret;
-}
-
-static jl_method_instance_t *jl_get_unspecialized(jl_method_instance_t *method)
-{
-    // one unspecialized version of a function can be shared among all cached specializations
-    jl_method_t *def = method->def.method;
-    if (def->source == NULL) {
-        return method;
-    }
-    if (def->unspecialized == NULL) {
-        JL_LOCK(&def->writelock);
-        if (def->unspecialized == NULL) {
-            def->unspecialized = jl_get_specialized(def, def->sig, jl_emptysvec);
-            jl_gc_wb(def, def->unspecialized);
-        }
-        JL_UNLOCK(&def->writelock);
-    }
-    return def->unspecialized;
-}
-
-// this compiles li and emits fptr (optionally given src)
-extern "C"
-jl_generic_fptr_t jl_generate_fptr(jl_method_instance_t *li, jl_code_info_t *src, size_t world)
-{
-    jl_generic_fptr_t fptr;
-    fptr.fptr = li->fptr;
-    fptr.jlcall_api = li->jlcall_api;
-    if (fptr.fptr && fptr.jlcall_api) {
-        return fptr;
-    }
-    fptr.fptr = li->unspecialized_ducttape;
-    fptr.jlcall_api = JL_API_GENERIC;
-    if (!li->inferred && fptr.fptr) {
-        return fptr;
-    }
-    JL_LOCK(&codegen_lock);
-    fptr.fptr = li->fptr;
-    fptr.jlcall_api = li->jlcall_api;
-    if (fptr.fptr && fptr.jlcall_api) {
-        JL_UNLOCK(&codegen_lock);
-        return fptr;
-    }
-    jl_method_instance_t *unspec = NULL;
-    jl_llvm_functions_t decls = li->functionObjectsDecls;
-    const char *F = decls.functionObject;
-    if (!F)
-        F = jl_compile_linfo(&li, src, world, &jl_default_cgparams).functionObject;
-    if (!F && jl_is_method(li->def.method)) {
-        // can't compile F in the JIT right now,
-        // so instead get an unspecialized version
-        // and return its fptr instead
-        // TODO: run this in the interpreter instead
-        if (!F || !jl_can_finalize_function(F)) {
-            if (!unspec)
-                unspec = jl_get_unspecialized(li); // get-or-create the unspecialized version to cache the result
-            jl_code_info_t *src = (jl_code_info_t*)unspec->def.method->source;
-            if (src == NULL) {
-                assert(unspec->def.method->generator);
-                src = jl_code_for_staged(unspec);
-            }
-            fptr.fptr = unspec->fptr;
-            fptr.jlcall_api = unspec->jlcall_api;
-            if (fptr.fptr && fptr.jlcall_api) {
-                JL_UNLOCK(&codegen_lock);
-                return fptr;
-            }
-            jl_llvm_functions_t decls = unspec->functionObjectsDecls;
-            if (unspec == li) {
-                // temporarily clear the decls so that it will compile our unspec version of src
-                unspec->functionObjectsDecls.functionObject = NULL;
-                unspec->functionObjectsDecls.specFunctionObject = NULL;
-            }
-            assert(src);
-            F = jl_compile_linfo(&unspec, src, unspec->min_world, &jl_default_cgparams).functionObject; // this does not change unspec
-            if (!F) {
-                // this should never happen, but will if the compiler crashes
-                // (because of staged functions or llvmcall or other codegen bugs, for example)
-                unspec->fptr = fptr.fptr = (jl_fptr_t)&jl_interpret_call;;
-                unspec->jlcall_api = fptr.jlcall_api = JL_API_INTERPRETED;
-                JL_UNLOCK(&codegen_lock); // Might GC
-                return fptr;
-            }
-            if (unspec == li) {
-                unspec->functionObjectsDecls = decls;
-            }
-            assert(jl_can_finalize_function(F));
-        }
-    }
-    assert(F && "TODO: run code in interpreter");
-    fptr.fptr = (jl_fptr_t)getAddressForFunction(F);
-    fptr.jlcall_api = jl_jlcall_api(F);
-    assert(fptr.fptr != NULL);
-    // decide if the fptr should be cached somewhere also
-    if (unspec) {
-        if (unspec->fptr) {
-            // don't change fptr as that leads to race conditions
-            // with the (not) simultaneous update to jlcall_api
-        }
-        else if (unspec == li) {
-            if (fptr.jlcall_api == JL_API_GENERIC)
-                li->unspecialized_ducttape = fptr.fptr;
-        }
-        else {
-            unspec->jlcall_api = fptr.jlcall_api;
-            unspec->fptr = fptr.fptr;
-        }
-    }
-    else {
-        if (li->fptr) {
-            // don't change fptr as that leads to race conditions
-            // with the (not) simultaneous update to jlcall_api
-        }
-        else if (li->inferred || fptr.jlcall_api != JL_API_GENERIC) {
-            li->jlcall_api = fptr.jlcall_api;
-            li->fptr = fptr.fptr;
-        }
-        else {
-            li->unspecialized_ducttape = fptr.fptr;
-        }
-    }
-    JL_UNLOCK(&codegen_lock); // Might GC
-    return fptr;
-}
-
 // this compiles li and emits fptr (optionally given src)
 extern "C"
 void jl_generate_ir(jl_method_instance_t *li, jl_code_info_t *src, size_t world)
@@ -1504,51 +1358,13 @@ void jl_generate_ir(jl_method_instance_t *li, jl_code_info_t *src, size_t world)
     JL_UNLOCK(&codegen_lock); // Might GC
 }
 
-static Function *jl_cfunction_object(jl_function_t *f, jl_value_t *rt, jl_tupletype_t *argt);
-// get the address of a C-callable entry point for a function
-extern "C" JL_DLLEXPORT
-void *jl_function_ptr(jl_function_t *f, jl_value_t *rt, jl_value_t *argt)
-{
-    JL_GC_PUSH1(&argt);
-    JL_LOCK(&codegen_lock);
-    Function *llvmf = jl_cfunction_object(f, rt, (jl_tupletype_t*)argt);
-    JL_GC_POP();
-    void *ptr = (void*)getAddressForFunction(llvmf->getName());
-    JL_UNLOCK(&codegen_lock);
-    return ptr;
-}
-
-
-// export a C-callable entry point for a function (dllexport'ed dlsym), with a given name
-extern "C" JL_DLLEXPORT
-void jl_extern_c(jl_function_t *f, jl_value_t *rt, jl_value_t *argt, char *name)
-{
-    assert(jl_is_tuple_type(argt));
-    JL_LOCK(&codegen_lock);
-    Function *llvmf = jl_cfunction_object(f, rt, (jl_tupletype_t*)argt);
-    // force eager emission of the function (llvm 3.3 gets confused otherwise and tries to do recursive compilation)
-    uint64_t Addr = getAddressForFunction(llvmf->getName());
-
-    if (imaging_mode)
-        llvmf = cast<Function>(shadow_output->getNamedValue(llvmf->getName()));
-
-    // make the alias to the shadow_module
-    GlobalAlias *GA =
-        GlobalAlias::create(llvmf->getType()->getElementType(), llvmf->getType()->getAddressSpace(),
-                            GlobalValue::ExternalLinkage, name, llvmf, shadow_output);
-
-    // make sure the alias name is valid for the current session
-    jl_ExecutionEngine->addGlobalMapping(GA, (void*)(uintptr_t)Addr);
-    JL_UNLOCK(&codegen_lock);
-}
-
 // --- native code info, and dump function to IR and ASM ---
 // Get pointer to llvm::Function instance, compiling if necessary
 // for use in reflection from Julia.
 // this is paired with jl_dump_function_ir and jl_dump_function_asm in particular ways:
 // misuse will leak memory or cause read-after-free
 extern "C" JL_DLLEXPORT
-void *jl_get_llvmf_defn(jl_method_instance_t *linfo, size_t world, bool getwrapper, bool optimize, const jl_cgparams_t params)
+void *jl_get_llvmf_defn(jl_method_instance_t *linfo, size_t world, char getwrapper, char optimize, const jl_cgparams_t params)
 {
     if (jl_is_method(linfo->def.method) && linfo->def.method->source == NULL &&
             linfo->def.method->generator == NULL) {
@@ -1619,130 +1435,6 @@ void *jl_get_llvmf_defn(jl_method_instance_t *linfo, size_t world, bool getwrapp
 
 void jl_strip_llvm_debug(Module *m);
 
-/// addPassesToX helper drives creation and initialization of TargetPassConfig.
-#if JL_LLVM_VERSION < 50000
-static MCContext *
-addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM) {
-  AnalysisID StartBefore = 0;
-  AnalysisID StartAfter = 0;
-  AnalysisID StopAfter = 0;
-
-  // When in emulated TLS mode, add the LowerEmuTLS pass.
-  if (TM->Options.EmulatedTLS)
-    PM.add(createLowerEmuTLSPass(TM));
-
-  PM.add(createPreISelIntrinsicLoweringPass());
-
-  // Add internal analysis passes from the target machine.
-  PM.add(createTargetTransformInfoWrapperPass(TM->getTargetIRAnalysis()));
-
-  // Targets may override createPassConfig to provide a target-specific
-  // subclass.
-  TargetPassConfig *PassConfig = TM->createPassConfig(PM);
-  PassConfig->setStartStopPasses(StartBefore, StartAfter, StopAfter);
-
-  // Set PassConfig options provided by TargetMachine.
-  PassConfig->setDisableVerify(false);
-
-  PM.add(PassConfig);
-
-  PassConfig->addIRPasses();
-
-  PassConfig->addCodeGenPrepare();
-
-  PassConfig->addPassesToHandleExceptions();
-
-  PassConfig->addISelPrepare();
-
-  MachineModuleInfo &MMI = TM->addMachineModuleInfo(PM);
-  TM->addMachineFunctionAnalysis(PM, nullptr);
-
-  // Disable FastISel with -O0
-  TM->setO0WantsFastISel(false);
-
-  if (PassConfig->addInstSelector())
-    return nullptr;
-
-  PassConfig->addMachinePasses();
-
-  PassConfig->setInitialized();
-
-  return &MMI.getContext();
-}
-#else
-static MCContext *
-addPassesToGenerateCode(LLVMTargetMachine *TM, PassManagerBase &PM) {
-    TargetPassConfig *PassConfig = TM->createPassConfig(PM);
-    PassConfig->setDisableVerify(false);
-    PM.add(PassConfig);
-    MachineModuleInfo *MMI = new MachineModuleInfo(TM);
-    PM.add(MMI);
-    if (!PassConfig->addISelPasses())
-        return NULL;
-    PassConfig->addMachinePasses();
-    PassConfig->setInitialized();
-    return &MMI->getContext();
-}
-#endif
-
-
-// get a native disassembly for linfo
-extern "C" JL_DLLEXPORT
-jl_value_t *jl_dump_method_asm(jl_method_instance_t *linfo, size_t world,
-        int raw_mc, bool getwrapper, const char* asm_variant, const jl_cgparams_t params)
-{
-    // printing via disassembly
-/*
-    jl_llvm_functions_t decls = {};
-    jl_generic_fptr_t decls = jl_generate_fptr(linfo, NULL, world);
-    uint64_t fptr = (uintptr_t)decls.fptr;
-    if (fptr)
-        return jl_dump_fptr_asm(fptr, raw_mc, asm_variant);
-*/
-
-    // precise printing via IR assembler
-    SmallVector<char, 4096> ObjBufferSV;
-    { // scope block
-        llvm::raw_svector_ostream asmfile(ObjBufferSV);
-        Function *f = (Function*)jl_get_llvmf_defn(linfo, world, getwrapper, true, params);
-        assert(!f->isDeclaration());
-        std::unique_ptr<Module> m(f->getParent());
-        for (auto &f2 : m->functions()) {
-            if (f != &f2 && !f->isDeclaration())
-                f2.deleteBody();
-        }
-        jl_strip_llvm_debug(m.get());
-        legacy::PassManager PM;
-        LLVMTargetMachine *TM = static_cast<LLVMTargetMachine*>(jl_TargetMachine);
-        MCContext *Context = addPassesToGenerateCode(TM, PM);
-        if (Context) {
-            const MCAsmInfo &MAI = *TM->getMCAsmInfo();
-            const MCRegisterInfo &MRI = *TM->getMCRegisterInfo();
-            const MCInstrInfo &MII = *TM->getMCInstrInfo();
-            unsigned OutputAsmDialect = MAI.getAssemblerDialect();
-            if (!strcmp(asm_variant, "att"))
-                OutputAsmDialect = 0;
-            if (!strcmp(asm_variant, "intel"))
-                OutputAsmDialect = 1;
-            MCInstPrinter *InstPrinter = TM->getTarget().createMCInstPrinter(
-                TM->getTargetTriple(), OutputAsmDialect, MAI, MII, MRI);
-            MCAsmBackend *MAB =
-                TM->getTarget().createMCAsmBackend(MRI, TM->getTargetTriple().str(), TM->getTargetCPU());
-            auto FOut = llvm::make_unique<formatted_raw_ostream>(asmfile);
-            MCCodeEmitter *MCE = nullptr;
-            std::unique_ptr<MCStreamer> S(TM->getTarget().createAsmStreamer(
-                *Context, std::move(FOut), true,
-                true, InstPrinter, MCE, MAB, false));
-            AsmPrinter *Printer =
-                TM->getTarget().createAsmPrinter(*TM, std::move(S));
-            if (Printer) {
-                PM.add(Printer);
-                PM.run(*m);
-            }
-        }
-    }
-    return jl_pchar_to_string(ObjBufferSV.data(), ObjBufferSV.size());
-}
 
 // Logging for code coverage and memory allocation
 
@@ -4637,7 +4329,7 @@ const struct jl_typemap_info cfunction_cache = {
 // Get the LLVM Function* for the C-callable entry point for a certain function
 // and argument types.
 // here argt does not include the leading function type argument
-static Function *jl_cfunction_object(jl_function_t *ff, jl_value_t *declrt, jl_tupletype_t *argt)
+Function *jl_cfunction_object(jl_function_t *ff, jl_value_t *declrt, jl_tupletype_t *argt)
 {
     // Assumes the codegen lock is acquired. The caller is responsible for that.
 
@@ -6950,30 +6642,4 @@ extern void jl_write_bitcode_module(void *M, char *fname) {
     std::error_code EC;
     raw_fd_ostream OS(fname, EC, sys::fs::F_None);
     llvm::WriteBitcodeToFile((llvm::Module*)M, OS);
-}
-
-// it generally helps to have define KEEP_BODIES if you plan on using this
-extern "C" JL_DLLEXPORT
-void *jl_function_ptr_by_llvm_name(char *name) {
-#ifdef JL_MSAN_ENABLED
-    __msan_unpoison_string(name);
-#endif
-    return (void*)jl_ExecutionEngine->FindFunctionNamed(name); // returns an llvm::Function*
-}
-
-extern "C" JL_DLLEXPORT
-uint64_t jl_get_llvm_fptr(void *function)
-{
-    Function *F = (Function*)function;
-    uint64_t addr = getAddressForFunction(F->getName());
-    if (!addr) {
-#if JL_LLVM_VERSION >= 50000
-        if (auto exp_addr = jl_ExecutionEngine->findUnmangledSymbol(F->getName()).getAddress()) {
-            addr = exp_addr.get();
-        }
-#else
-        addr = jl_ExecutionEngine->findUnmangledSymbol(F->getName()).getAddress();
-#endif
-    }
-    return addr;
 }

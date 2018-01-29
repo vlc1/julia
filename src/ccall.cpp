@@ -2,6 +2,10 @@
 
 // --- the ccall, cglobal, and llvm intrinsics ---
 
+extern "C" JL_DLLEXPORT
+void *jl_function_ptr(jl_function_t *f, jl_value_t *rt, jl_value_t *argt);
+Function *jl_cfunction_object(jl_function_t *f, jl_value_t *rt, jl_tupletype_t *argt);
+
 // Map from symbol name (in a certain library) to its GV in sysimg and the
 // DL handle address in the current session.
 typedef StringMap<std::pair<GlobalVariable*,void*>> SymMapGV;
