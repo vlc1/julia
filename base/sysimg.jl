@@ -443,8 +443,6 @@ include("missing.jl")
 # libgit2 support
 include("libgit2/libgit2.jl")
 
-const PKG_MODULE_REF = Ref{Module}()
-
 # worker threads
 include("threadcall.jl")
 

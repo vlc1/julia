@@ -38,7 +38,7 @@ runtests(){
 
     gmake testall \
         test-download \
-        test-pkg \
+        test-Pkg \ # <- TODO: Should only test Pkg/pkg but no rule for test-Pkg/pkg
         test-libgit2-online
 }
 

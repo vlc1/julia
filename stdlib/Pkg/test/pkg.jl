@@ -1,5 +1,9 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
+module PkgTests
+
+using Test
+import Pkg
 import Pkg.PkgError
 using Random: randstring
 
@@ -724,3 +728,5 @@ for t = 1:1_000
         @test (v ∈ a && v ∈ b) ? (v ∈ i) : (v ∉ i)
     end
 end
+
+end # module

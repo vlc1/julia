@@ -1,5 +1,8 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
+module PkgResolveTests
+
+using Test
 import Pkg
 using Pkg.Types
 using Pkg.Query
@@ -541,3 +544,5 @@ include("resolvedata1.jl")
 
 @test sanity_tst(deps_data, problematic_data)
 @test resolve_tst(deps_data, reqs_data, want_data)
+
+end # module

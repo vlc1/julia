@@ -85,8 +85,6 @@ custom METADATA setup.
 init(meta::AbstractString=DEFAULT_META, branch::AbstractString=META_BRANCH) = Dir.init(meta,branch)
 
 function __init__()
-    Base.PKG_MODULE_REF[] = Pkg
-
     vers = "v$(VERSION.major).$(VERSION.minor)"
     pushfirst!(Base.LOAD_PATH, dir)
     pushfirst!(Base.LOAD_CACHE_PATH, abspath(Dir._pkgroot(), "lib", vers))

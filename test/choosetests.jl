@@ -128,6 +128,8 @@ function choosetests(choices = [])
         prepend!(tests, STDLIBS)
     end
 
+
+    explicit_pkg =  "Pkg/pkg" in tests
     new_tests = String[]
     for test in tests
         if test in STDLIBS
@@ -141,6 +143,9 @@ function choosetests(choices = [])
     end
     filter!(x -> (x != "stdlib" && !(x in STDLIBS)) , tests)
     prepend!(tests, new_tests)
+    if !explicit_pkg
+        filter!(x -> x != "Pkg/pkg", tests)
+    end
 
     # do ambiguous first to avoid failing if ambiguities are introduced by other tests
     if "ambiguous" in skip_tests
@@ -157,7 +162,7 @@ function choosetests(choices = [])
         filter!(x -> (x != "Profile"), tests)
     end
 
-    net_required_for = ["socket", "stdlib", "libgit2", "Pkg"]
+    net_required_for = ["socket", "libgit2"]
     net_on = true
     try
         ipa = getipaddr()
@@ -166,13 +171,13 @@ function choosetests(choices = [])
         net_on = false
     end
 
+    if !net_on
+        filter!(!occursin(net_required_for), tests)
+    end
+
     if ccall(:jl_running_on_valgrind,Cint,()) != 0 && "rounding" in tests
         @warn "Running under valgrind: Skipping rounding tests"
         filter!(x -> x != "rounding", tests)
-    end
-
-    if !net_on
-        filter!(!occursin(net_required_for), tests)
     end
 
     # The shift and invert solvers need SuiteSparse for sparse input
